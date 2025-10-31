@@ -48,13 +48,18 @@ export function useLivePrices(pairs: PairKey[]) {
     return () => { cancelled = true }
   }, [pairs])
 
-  // Gate dashboard until: first tick received for ALL pairs via WebSocket
+  // Dashboard is ready when: WebSocket connected (or history loaded as fallback)
+  // Show dashboard immediately when connected for better UX
   useEffect(() => {
-    const allHaveFirstTick = pairs.every((p) => !!ticks[p])
-    if (conn === 'connected' && allHaveFirstTick) {
+    if (conn === 'connected') {
+      // Show dashboard once connected, even if history is still loading
       setReady(true)
+    } else if (historyLoaded && conn === 'connecting') {
+      // If history loaded but not connected yet, show after a short delay
+      const timer = setTimeout(() => setReady(true), 1000)
+      return () => clearTimeout(timer)
     }
-  }, [conn, ticks, pairs])
+  }, [conn, historyLoaded])
 
   // websocket
   useEffect(() => {

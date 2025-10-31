@@ -64,9 +64,28 @@ export default function App() {
         {PAIRS.map((p) => (<PairChart key={p} pair={p} data={series[p]} />))}
       </div>
 
-      <div className="footer">
-        Backend at <code>/api</code> • WebSocket at <code>/ws</code>
-      </div>
+      <footer className="footer">
+        <div className="footer-content">
+          <div className="footer-brand">
+            <span className="footer-brand-name">Able</span>
+            <span className="footer-tagline">Real-time cryptocurrency insights</span>
+          </div>
+          <div className="footer-info">
+            <div className="footer-item">
+              <span className="footer-label">Powered by</span>
+              <span className="footer-value">Finnhub API</span>
+            </div>
+            <div className="footer-divider">•</div>
+            <div className="footer-item">
+              <span className="footer-label">Data updates</span>
+              <span className="footer-value">Real-time</span>
+            </div>
+          </div>
+        </div>
+        <div className="footer-copyright">
+          © {new Date().getFullYear()} Able. All rights reserved.
+        </div>
+      </footer>
     </div>
   )
 }
