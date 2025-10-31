@@ -20,8 +20,8 @@ services:
       context: ./backend
       dockerfile: Dockerfile
     environment:
-      FINNHUB_API_KEY: ${FINNHUB_API_KEY}
-      DATABASE_URL: ${DATABASE_URL}
+      FINNHUB_API_KEY: ${FINNHUB_API_KEY:-d411to1r01qr2l0c7190d411to1r01qr2l0c719g}
+      DATABASE_URL: postgres://able:able@db:5432/able
       PORT: 3000
       CORS_ORIGIN: http://localhost:8080
     depends_on:

@@ -4,18 +4,10 @@ import pg from 'pg';
 
 export type PairKey = 'ETH/USDC' | 'ETH/USDT' | 'ETH/BTC';
 
-// Subscribe to multiple provider symbols per pair to increase coverage (some venues are low-volume)
-export const PAIRS: Record<PairKey, string[]> = {
-  'ETH/USDC': [
-    'BINANCE:ETHUSDC',
-    'BINANCEUS:ETHUSDC',
-    'KRAKEN:ETHUSDC',
-    'COINBASE:ETH-USDC',
-    'OKX:ETH-USDC',
-    'BITSTAMP:ETHUSDC',
-  ],
-  'ETH/USDT': ['BINANCE:ETHUSDT'],
-  'ETH/BTC': ['BINANCE:ETHBTC'],
+export const PAIRS: Record<PairKey, string> = {
+  'ETH/USDC': 'BINANCE:ETHUSDC',
+  'ETH/USDT': 'BINANCE:ETHUSDT',
+  'ETH/BTC': 'BINANCE:ETHBTC',
 };
 
 export interface NormalizedTick {
@@ -38,19 +30,33 @@ export class PricesService {
   }
 
   private async bootstrap() {
-    const client = await this.pool.connect();
     try {
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS hourly_averages (
-          pair TEXT NOT NULL,
-          hour_start BIGINT NOT NULL,
-          sum DOUBLE PRECISION NOT NULL DEFAULT 0,
-          count BIGINT NOT NULL DEFAULT 0,
-          PRIMARY KEY (pair, hour_start)
-        );
-      `);
-    } finally {
-      client.release();
+      const client = await this.pool.connect();
+      try {
+        await client.query(`
+          CREATE TABLE IF NOT EXISTS hourly_averages (
+            pair TEXT NOT NULL,
+            hour_start BIGINT NOT NULL,
+            sum DOUBLE PRECISION NOT NULL DEFAULT 0,
+            count BIGINT NOT NULL DEFAULT 0,
+            PRIMARY KEY (pair, hour_start)
+          );
+        `);
+      } catch (err) {
+        // Only log errors in non-test environments to reduce test noise
+        if (process.env.NODE_ENV !== 'test') {
+          logger.error({ err: err }, 'DB create table failed');
+        }
+      } finally {
+        client.release();
+      }
+    } catch (err: any) {
+      // Only log connection errors in non-test environments
+      if (process.env.NODE_ENV !== 'test') {
+        logger.error({ err: err }, 'DB connection failed during bootstrap');
+      }
+      // Don't throw - allow service to start even if DB is unavailable
+      // The health endpoint will report the status
     }
   }
 
@@ -78,7 +84,7 @@ export class PricesService {
   }
 
   async listPairs() {
-    return Object.entries(PAIRS).map(([pair, symbols]) => ({ pair, symbols }));
+    return Object.entries(PAIRS).map(([pair, symbol]) => ({ pair, symbol }));
   }
 
   async hourlyHistory(pair: PairKey, hours: number) {
@@ -91,7 +97,7 @@ export class PricesService {
       ORDER BY hour_start ASC;
     `;
     const res = await this.pool.query(q, [pair, from]);
-    return res.rows.map((r: any) => ({
+    return res.rows.map((r) => ({
       pair: r.pair as PairKey,
       hourStart: Number(r.hour_start),
       avg: Number(r.sum) / Math.max(1, Number(r.count)),
@@ -104,7 +110,10 @@ export class PricesService {
       await this.pool.query('SELECT 1');
       return { ok: true };
     } catch (e) {
-      logger.error({ err: e }, 'DB health check failed');
+      // Only log errors in non-test environments to reduce test noise
+      if (process.env.NODE_ENV !== 'test') {
+        logger.error({ err: e }, 'DB health check failed');
+      }
       return { ok: false };
     }
   }

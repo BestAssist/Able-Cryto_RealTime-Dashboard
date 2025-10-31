@@ -1,8 +1,8 @@
 import WebSocket from 'ws';
 import pino from 'pino';
 import { Injectable, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
-import { PricesService, NormalizedTick, PairKey, PAIRS } from '../prices/prices.service.js';
-import { WsGateway } from '../ws/ws.gateway.js';
+import { PricesService, NormalizedTick, PairKey, PAIRS } from '../prices/prices.service';
+import { WsGateway } from '../ws/ws.gateway';
 
 const logger = pino({ level: process.env.LOG_LEVEL || 'info', transport: { target: 'pino-pretty' } });
 
@@ -12,19 +12,11 @@ export class FinnhubService implements OnModuleInit, OnModuleDestroy {
   private shuttingDown = false;
   private backoffMs = 1000;
   private readonly maxBackoff = 15000;
-  private lastTickMs: Record<PairKey, number> = {
-    'ETH/USDC': 0,
-    'ETH/USDT': 0,
-    'ETH/BTC': 0,
-  };
-  private lastPrice: Partial<Record<PairKey, number>> = {};
-  private backfillTimer: NodeJS.Timer | null = null;
 
   constructor(private prices: PricesService, private gateway: WsGateway) {}
 
   onModuleInit() {
     this.connect();
-    this.startBackfill();
   }
 
   onModuleDestroy() {
@@ -32,16 +24,14 @@ export class FinnhubService implements OnModuleInit, OnModuleDestroy {
     if (this.ws) {
       this.ws.close();
     }
-    if (this.backfillTimer) {
-      clearInterval(this.backfillTimer as any);
-      this.backfillTimer = null;
-    }
   }
 
   private connect() {
     const token = process.env.FINNHUB_API_KEY;
-    if (!token) {
-      logger.error('FINNHUB_API_KEY is not set');
+    if (!token || token === 'your_finnhub_api_key_here') {
+      logger.error('FINNHUB_API_KEY is not set or invalid. Please set it in your .env file or environment variables.');
+      logger.error('Get your API key at: https://finnhub.io');
+      // Don't retry if API key is missing - wait for user to fix it
       return;
     }
     const url = `wss://ws.finnhub.io?token=${token}`;
@@ -50,10 +40,8 @@ export class FinnhubService implements OnModuleInit, OnModuleDestroy {
     this.ws.on('open', () => {
       logger.info('Connected to Finnhub WS');
       this.backoffMs = 1000;
-      // Subscribe to all mapped symbols for each pair
-      const symbols = Object.values(PAIRS).flat();
-      logger.info({ symbols }, 'Subscribing to crypto symbols');
-      symbols.forEach((sym) => {
+      // Subscribe to all mapped symbols
+      Object.values(PAIRS).forEach((sym) => {
         const msg = JSON.stringify({ type: 'subscribe', symbol: sym });
         this.ws?.send(msg);
       });
@@ -67,7 +55,7 @@ export class FinnhubService implements OnModuleInit, OnModuleDestroy {
             const symbol: string = t.s;
             const price: number = t.p;
             const ts: number = t.t; // ms epoch
-            const pairEntry = Object.entries(PAIRS).find(([k, symbols]) => (symbols as string[]).includes(symbol));
+            const pairEntry = Object.entries(PAIRS).find(([k, v]) => v === symbol);
             if (!pairEntry) continue;
             const pair = pairEntry[0] as PairKey;
 
@@ -75,15 +63,9 @@ export class FinnhubService implements OnModuleInit, OnModuleDestroy {
             const normalized: NormalizedTick = { pair, price, ts, hourlyAvg };
             // broadcast to clients
             this.gateway.broadcastPrice(normalized);
-            this.lastTickMs[pair] = ts;
-            this.lastPrice[pair] = price;
           }
         } else if (msg.type === 'ping') {
-          // re-affirm subscriptions periodically (defensive against drops)
-          Object.values(PAIRS).flat().forEach((sym) => {
-            const sub = JSON.stringify({ type: 'subscribe', symbol: sym });
-            this.ws?.send(sub);
-          });
+          // ignore
         }
       } catch (e) {
         logger.warn({ err: e }, 'Failed to parse Finnhub message');
@@ -99,65 +81,17 @@ export class FinnhubService implements OnModuleInit, OnModuleDestroy {
     };
 
     this.ws.on('close', scheduleReconnect);
-    this.ws.on('error', (err) => {
+    this.ws.on('error', (err: Error) => {
+      // Check if it's an authentication error (401)
+      if (err.message.includes('401')) {
+        logger.error('Finnhub WebSocket authentication failed. Please check your FINNHUB_API_KEY is valid.');
+        logger.error('Get your API key at: https://finnhub.io');
+        // Don't retry on 401 - the API key is wrong
+        this.shuttingDown = true;
+        return;
+      }
       logger.error({ err }, 'Finnhub WS error');
       this.ws?.close();
     });
-  }
-
-  private startBackfill() {
-    const token = process.env.FINNHUB_API_KEY;
-    if (!token) return;
-    const primarySymbol: Record<PairKey, string> = {
-      'ETH/USDC': (PAIRS['ETH/USDC'][0] as string),
-      'ETH/USDT': (PAIRS['ETH/USDT'][0] as string),
-      'ETH/BTC': (PAIRS['ETH/BTC'][0] as string),
-    };
-    const intervalMs = 15000; // if no tick for 15s, fetch latest candle
-    this.backfillTimer = setInterval(async () => {
-      const now = Date.now();
-      for (const pair of Object.keys(this.lastTickMs) as PairKey[]) {
-        const last = this.lastTickMs[pair] || 0;
-        if (now - last < intervalMs) continue;
-        try {
-          const sym = primarySymbol[pair];
-          const from = Math.floor((now - 120000) / 1000);
-          const to = Math.floor(now / 1000);
-          const url = `https://finnhub.io/api/v1/crypto/candle?symbol=${encodeURIComponent(sym)}&resolution=1&from=${from}&to=${to}&token=${token}`;
-          const res = await fetch(url);
-          if (!res.ok) continue;
-          const data: any = await res.json();
-          if (data && data.t && data.c && data.t.length && data.c.length) {
-            const ts = Number(data.t[data.t.length - 1]) * 1000;
-            const price = Number(data.c[data.c.length - 1]);
-            if (!Number.isFinite(price) || !Number.isFinite(ts)) continue;
-            const avg = await this.prices.upsertHourlyAverage(pair, ts, price);
-            const normalized: NormalizedTick = { pair, price, ts, hourlyAvg: avg };
-            this.gateway.broadcastPrice(normalized);
-            this.lastTickMs[pair] = ts;
-            this.lastPrice[pair] = price;
-          }
-        } catch (err) {
-          logger.warn({ err, pair }, 'Backfill fetch failed');
-        }
-      }
-
-      // Synthetic fallback for ETH/USDC: use ETH/USDT price if USDC is stale (USDC ~ USD)
-      const usdcLast = this.lastTickMs['ETH/USDC'] || 0;
-      const usdtLast = this.lastTickMs['ETH/USDT'] || 0;
-      if (now - usdcLast >= intervalMs && now - usdtLast < intervalMs * 2 && this.lastPrice['ETH/USDT']) {
-        const price = this.lastPrice['ETH/USDT'] as number;
-        const ts = now;
-        try {
-          const avg = await this.prices.upsertHourlyAverage('ETH/USDC', ts, price);
-          const normalized: NormalizedTick = { pair: 'ETH/USDC', price, ts, hourlyAvg: avg };
-          this.gateway.broadcastPrice(normalized);
-          this.lastTickMs['ETH/USDC'] = ts;
-          this.lastPrice['ETH/USDC'] = price;
-        } catch (err) {
-          logger.warn({ err }, 'Synthetic ETH/USDC emit failed');
-        }
-      }
-    }, intervalMs);
   }
 }

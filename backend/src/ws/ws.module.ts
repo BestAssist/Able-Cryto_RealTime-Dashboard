@@ -1,5 +1,5 @@
 import { Module } from '@nestjs/common';
-import { WsGateway } from './ws.gateway.js';
+import { WsGateway } from './ws.gateway';
 
 @Module({
   providers: [WsGateway],

@@ -1,5 +1,5 @@
 import { Controller, Get, Query } from '@nestjs/common';
-import { PricesService, PairKey } from './prices.service.js';
+import { PricesService, PairKey } from './prices.service';
 
 @Controller('api')
 export class PricesController {
@@ -17,7 +17,8 @@ export class PricesController {
 
   @Get('averages')
   async averages(@Query('pair') pair: PairKey, @Query('hours') hours?: string) {
-    const hrs = Math.max(1, Math.min(720, Number(hours || 24)));
+    const hrsNum = Number(hours || 24);
+    const hrs = isNaN(hrsNum) ? 24 : Math.max(1, Math.min(720, hrsNum));
     return this.svc.hourlyHistory(pair, hrs);
   }
 }

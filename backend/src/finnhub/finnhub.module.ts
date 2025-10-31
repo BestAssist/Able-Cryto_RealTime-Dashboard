@@ -1,7 +1,7 @@
 import { Module } from '@nestjs/common';
-import { FinnhubService } from './finnhub.service.js';
-import { PricesModule } from '../prices/prices.module.js';
-import { WsModule } from '../ws/ws.module.js';
+import { FinnhubService } from './finnhub.service';
+import { PricesModule } from '../prices/prices.module';
+import { WsModule } from '../ws/ws.module';
 
 @Module({
   imports: [PricesModule, WsModule],
