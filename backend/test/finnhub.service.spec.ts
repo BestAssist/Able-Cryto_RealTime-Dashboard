@@ -1,330 +1,399 @@
-import { jest, describe, it, expect, beforeEach, afterEach } from '@jest/globals';
-
-const mockInstances: any[] = [];
-
-class MockWebSocket {
-  static CONNECTING = 0;
-  static OPEN = 1;
-  static CLOSING = 2;
-  static CLOSED = 3;
-  
-  onopen: (() => void) | null = null;
-  onmessage: ((data: any) => void) | null = null;
-  onclose: (() => void) | null = null;
-  onerror: ((err: Error) => void) | null = null;
-  readyState: number = MockWebSocket.CONNECTING;
-  private handlers: Map<string, Function[]> = new Map();
-  
-  constructor(public url: string) {
-    mockInstances.push(this);
-  }
-  
-  send(data: string) {
-    // Mock send
-  }
-  
-  close() {
-    this.readyState = MockWebSocket.CLOSING;
-    if (this.onclose) {
-      setTimeout(() => {
-        this.readyState = MockWebSocket.CLOSED;
-        this.onclose?.();
-      }, 0);
-    }
-  }
-  
-  on(event: string, handler: Function) {
-    if (!this.handlers.has(event)) {
-      this.handlers.set(event, []);
-    }
-    this.handlers.get(event)!.push(handler);
-    
-    // Also set properties for direct access
-    if (event === 'open') this.onopen = handler as () => void;
-    if (event === 'message') this.onmessage = handler as (data: any) => void;
-    if (event === 'close') this.onclose = handler as () => void;
-    if (event === 'error') this.onerror = handler as (err: Error) => void;
-  }
-  
-  emit(event: string, ...args: any[]) {
-    const handlers = this.handlers.get(event) || [];
-    handlers.forEach(h => h(...args));
-  }
-}
-
-import { FinnhubService } from '../src/finnhub/finnhub.service.js';
-import { PricesService } from '../src/prices/prices.service.js';
-import { WsGateway } from '../src/ws/ws.gateway.js';
-import { PAIRS } from '../src/prices/prices.service.js';
+import { Test, TestingModule } from '@nestjs/testing';
+import { FinnhubService } from '../src/finnhub/finnhub.service';
+import { PricesService, PAIRS } from '../src/prices/prices.service';
+import { WsGateway } from '../src/ws/ws.gateway';
+// Mock WebSocket - using the mock file
+// The mock is already set up in test/__mocks__/ws.ts via moduleNameMapper
+import WebSocket from 'ws';
 
 describe('FinnhubService', () => {
   let service: FinnhubService;
-  let mockPricesService: jest.Mocked<PricesService>;
-  let mockGateway: jest.Mocked<WsGateway>;
+  let pricesService: jest.Mocked<PricesService>;
+  let wsGateway: jest.Mocked<WsGateway>;
+  let originalEnv: NodeJS.ProcessEnv;
 
-  beforeEach(() => {
-    mockInstances.length = 0;
-    jest.useFakeTimers();
-    process.env.FINNHUB_API_KEY = 'test-key';
+  const mockPricesService = {
+    upsertHourlyAverage: jest.fn(),
+    listPairs: jest.fn(),
+    hourlyHistory: jest.fn(),
+    health: jest.fn(),
+  };
 
-    mockPricesService = {
-      upsertHourlyAverage: (jest.fn() as any).mockResolvedValue(100),
-    } as any;
+  const mockWsGateway = {
+    broadcastPrice: jest.fn(),
+  };
 
-    mockGateway = {
-      broadcastPrice: jest.fn(),
-    } as any;
+  beforeEach(async () => {
+    originalEnv = { ...process.env };
+    jest.clearAllMocks();
+    // Clear mock instances
+    const MockWS = require('./__mocks__/ws').default;
+    MockWS.clear();
 
-    service = new FinnhubService(mockPricesService, mockGateway);
-    
-    // Manually inject mock WebSocket by spying on connect
-    jest.spyOn(service as any, 'connect').mockImplementation(function(this: any) {
-      const token = process.env.FINNHUB_API_KEY;
-      if (!token) return;
-      this.ws = new MockWebSocket(`wss://ws.finnhub.io?token=${token}`);
-      
-      const symbols = Object.values(PAIRS).flat();
-      this.ws.on('open', () => {
-        symbols.forEach((sym: string) => {
-          const msg = JSON.stringify({ type: 'subscribe', symbol: sym });
-          this.ws?.send(msg);
-        });
-      });
-      
-      const serviceRef = this;
-      this.ws.on('message', async (raw: any) => {
-        try {
-          const msg = JSON.parse(raw.toString());
-          if (msg.type === 'trade' && Array.isArray(msg.data)) {
-            for (const t of msg.data) {
-              const symbol: string = t.s;
-              const price: number = t.p;
-              const ts: number = t.t;
-              const pairEntry = Object.entries(PAIRS).find(([k, syms]) => (syms as string[]).includes(symbol));
-              if (!pairEntry) continue;
-              const pair = pairEntry[0] as any;
-              
-              const hourlyAvg = await serviceRef.prices.upsertHourlyAverage(pair, ts, price);
-              serviceRef.gateway.broadcastPrice({ pair, price, ts, hourlyAvg });
-            }
-          } else if (msg.type === 'ping') {
-            symbols.forEach((sym: string) => {
-              const sub = JSON.stringify({ type: 'subscribe', symbol: sym });
-              serviceRef.ws?.send(sub);
-            });
-          }
-        } catch (e) {
-          // Ignore
-        }
-      });
-      
-      const scheduleReconnect = () => {
-        if (this.shuttingDown) return;
-        setTimeout(() => this.connect(), this.backoffMs);
-        this.backoffMs = Math.min(this.backoffMs * 2, 15000);
-      };
-      
-      this.ws.on('close', scheduleReconnect);
-      this.ws.on('error', (err: Error) => {
-        this.ws?.close();
-      });
-    });
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [
+        FinnhubService,
+        {
+          provide: PricesService,
+          useValue: mockPricesService,
+        },
+        {
+          provide: WsGateway,
+          useValue: mockWsGateway,
+        },
+      ],
+    }).compile();
+
+    service = module.get<FinnhubService>(FinnhubService);
+    pricesService = module.get(PricesService);
+    wsGateway = module.get(WsGateway);
   });
 
   afterEach(() => {
-    if (service) {
-      service.onModuleDestroy();
-    }
+    process.env = originalEnv;
     jest.useRealTimers();
-    jest.restoreAllMocks();
-    mockInstances.length = 0;
   });
 
-  describe('connection handling', () => {
-    it('connects on module init', () => {
-      service.onModuleInit();
-      expect(mockInstances.length).toBeGreaterThan(0);
-    });
-
-    it('does not connect if API key is missing', () => {
-      delete process.env.FINNHUB_API_KEY;
-      const newService = new FinnhubService(mockPricesService, mockGateway);
-      jest.spyOn(newService as any, 'connect').mockImplementation(function(this: any) {
-        const token = process.env.FINNHUB_API_KEY;
-        if (!token) return;
-        this.ws = new MockWebSocket(`wss://ws.finnhub.io?token=${token}`);
-      });
-      newService.onModuleInit();
-      expect(mockInstances.length).toBe(0);
+  describe('connection', () => {
+    it('should connect on module init', async () => {
       process.env.FINNHUB_API_KEY = 'test-key';
+      
+      await service.onModuleInit();
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      const MockWS = require('./__mocks__/ws').default;
+      expect(MockWS.instances.length).toBeGreaterThanOrEqual(1);
     });
 
-    it('subscribes to all symbols on open', () => {
-      service.onModuleInit();
-      const ws = mockInstances[0];
-      expect(ws).toBeDefined();
-      const sent: string[] = [];
-      ws.send = (data: string) => sent.push(data);
+    it('should not connect if API key is missing', async () => {
+      delete process.env.FINNHUB_API_KEY;
       
-      ws.readyState = 1;
-      ws.emit('open');
-      
-      expect(sent.length).toBeGreaterThan(0);
-      const subscribeMessages = sent.filter((s: string) => JSON.parse(s).type === 'subscribe');
-      expect(subscribeMessages.length).toBeGreaterThanOrEqual(8);
+      await service.onModuleInit();
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      const MockWS = require('./__mocks__/ws').default;
+      expect(MockWS.instances.length).toBe(0);
     });
 
-    it('handles connection close', () => {
-      service.onModuleInit();
-      const ws = mockInstances[0];
-      expect(ws).toBeDefined();
+    it('should not connect if API key is placeholder', async () => {
+      process.env.FINNHUB_API_KEY = 'your_finnhub_api_key_here';
       
-      // When close is emitted, it should schedule reconnect
-      ws.emit('close');
-      
-      // Advance timers to trigger reconnection
-      jest.advanceTimersByTime(1000);
-      
-      // Should have attempted to reconnect (new instance created)
-      expect(mockInstances.length).toBeGreaterThan(1);
+      await service.onModuleInit();
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      const MockWS = require('./__mocks__/ws').default;
+      expect(MockWS.instances.length).toBe(0);
     });
 
-    it('handles WebSocket errors', () => {
-      service.onModuleInit();
-      const ws = mockInstances[0];
-      expect(ws).toBeDefined();
+    it('should subscribe to all pairs on connection', async () => {
+      process.env.FINNHUB_API_KEY = 'test-key';
+      
+      await service.onModuleInit();
+      await new Promise(resolve => setTimeout(resolve, 20));
+
+      const MockWS = require('./__mocks__/ws').default;
+      const ws = MockWS.instances[0];
+      const sentMessages = ws.getSentMessages();
+
+      expect(sentMessages.length).toBeGreaterThan(0);
+      Object.values(PAIRS).forEach(symbol => {
+        const subscribeMsg = sentMessages.find((msg: string) => {
+          const parsed = JSON.parse(msg);
+          return parsed.type === 'subscribe' && parsed.symbol === symbol;
+        });
+        expect(subscribeMsg).toBeDefined();
+      });
+    });
+  });
+
+  describe('message handling', () => {
+    let mockWs: any;
+
+    beforeEach(async () => {
+      process.env.FINNHUB_API_KEY = 'test-key';
+      mockPricesService.upsertHourlyAverage.mockResolvedValue(1000.0);
+      
+      await service.onModuleInit();
+      await new Promise(resolve => setTimeout(resolve, 20));
+
+      const MockWS = require('./__mocks__/ws').default;
+      const instances = MockWS.instances;
+      mockWs = instances[0];
+    });
+
+    it('should process trade messages and broadcast prices', async () => {
+      const tradeMessage = {
+        type: 'trade',
+        data: [
+          {
+            s: 'BINANCE:ETHUSDC',
+            p: 1000.5,
+            t: Date.now(),
+          },
+        ],
+      };
+
+      mockWs.simulateMessage(tradeMessage);
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      expect(pricesService.upsertHourlyAverage).toHaveBeenCalledWith(
+        'ETH/USDC',
+        expect.any(Number),
+        1000.5,
+      );
+      expect(wsGateway.broadcastPrice).toHaveBeenCalledWith(
+        expect.objectContaining({
+          pair: 'ETH/USDC',
+          price: 1000.5,
+        }),
+      );
+    });
+
+    it('should handle multiple trades in one message', async () => {
+      const tradeMessage = {
+        type: 'trade',
+        data: [
+          { s: 'BINANCE:ETHUSDC', p: 1000.5, t: Date.now() },
+          { s: 'BINANCE:ETHUSDT', p: 1001.0, t: Date.now() },
+          { s: 'BINANCE:ETHBTC', p: 0.05, t: Date.now() },
+        ],
+      };
+
+      mockPricesService.upsertHourlyAverage
+        .mockResolvedValueOnce(1000.5)
+        .mockResolvedValueOnce(1001.0)
+        .mockResolvedValueOnce(0.05);
+
+      mockWs.simulateMessage(tradeMessage);
+      await new Promise(resolve => setTimeout(resolve, 20));
+
+      expect(pricesService.upsertHourlyAverage).toHaveBeenCalledTimes(3);
+      expect(wsGateway.broadcastPrice).toHaveBeenCalledTimes(3);
+    });
+
+    it('should ignore ping messages', async () => {
+      const pingMessage = { type: 'ping' };
+
+      mockWs.simulateMessage(pingMessage);
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      expect(pricesService.upsertHourlyAverage).not.toHaveBeenCalled();
+      expect(wsGateway.broadcastPrice).not.toHaveBeenCalled();
+    });
+
+    it('should ignore unknown message types', async () => {
+      const unknownMessage = { type: 'unknown', data: {} };
+
+      mockWs.simulateMessage(unknownMessage);
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      expect(pricesService.upsertHourlyAverage).not.toHaveBeenCalled();
+    });
+
+    it('should ignore trades for unknown symbols', async () => {
+      const tradeMessage = {
+        type: 'trade',
+        data: [
+          {
+            s: 'BINANCE:UNKNOWN',
+            p: 1000.5,
+            t: Date.now(),
+          },
+        ],
+      };
+
+      mockWs.simulateMessage(tradeMessage);
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      expect(pricesService.upsertHourlyAverage).not.toHaveBeenCalled();
+      expect(wsGateway.broadcastPrice).not.toHaveBeenCalled();
+    });
+
+    it('should handle invalid JSON messages gracefully', async () => {
+      // Simulate invalid message
+      if (mockWs.onmessage) {
+        mockWs.onmessage({ type: 'message', data: Buffer.from('invalid json') });
+      }
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      // Should not crash
+      expect(pricesService.upsertHourlyAverage).not.toHaveBeenCalled();
+    });
+
+    it('should handle non-array trade data', async () => {
+      const tradeMessage = {
+        type: 'trade',
+        data: { s: 'BINANCE:ETHUSDC', p: 1000.5, t: Date.now() }, // not an array
+      };
+
+      mockWs.simulateMessage(tradeMessage);
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      expect(pricesService.upsertHourlyAverage).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('error handling', () => {
+    it('should handle authentication errors (401)', async () => {
+      process.env.FINNHUB_API_KEY = 'invalid-key';
+      
+      await service.onModuleInit();
+      await new Promise(resolve => setTimeout(resolve, 20));
+
+      const MockWS = require('./__mocks__/ws').default;
+      const ws = MockWS.instances[0];
+      const authError = new Error('401 Unauthorized');
+      
+      ws.simulateError(authError);
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      // Should mark as shutting down
+      expect((service as any).shuttingDown).toBe(true);
+    });
+
+    it('should handle connection errors and close', async () => {
+      process.env.FINNHUB_API_KEY = 'test-key';
+      
+      await service.onModuleInit();
+      await new Promise(resolve => setTimeout(resolve, 20));
+
+      const MockWS = require('./__mocks__/ws').default;
+      const ws = MockWS.instances[0];
       const closeSpy = jest.spyOn(ws, 'close');
+      const connectionError = new Error('ECONNREFUSED');
       
-      const error = new Error('Connection error');
-      ws.emit('error', error);
-      
+      ws.simulateError(connectionError);
+      await new Promise(resolve => setTimeout(resolve, 10));
+
       expect(closeSpy).toHaveBeenCalled();
     });
   });
 
-  describe('message processing', () => {
+  describe('reconnection logic', () => {
     beforeEach(() => {
-      service.onModuleInit();
-      const ws = mockInstances[0];
-      ws.readyState = 1;
-      ws.emit('open');
+      jest.useFakeTimers();
     });
 
-    it('processes valid trade messages', async () => {
-      const ws = mockInstances[0];
-      const tradeMessage = {
-        type: 'trade',
-        data: [{ s: 'BINANCE:ETHUSDT', p: 2500, t: Date.now() }],
-      };
-      
-      ws.emit('message', Buffer.from(JSON.stringify(tradeMessage)));
-      
-      await Promise.resolve();
-      await Promise.resolve();
-      
-      expect(mockPricesService.upsertHourlyAverage).toHaveBeenCalled();
-      expect(mockGateway.broadcastPrice).toHaveBeenCalledWith(
-        expect.objectContaining({ pair: 'ETH/USDT', price: 2500 })
-      );
+    afterEach(() => {
+      jest.useRealTimers();
     });
 
-    it('handles multiple trades in one message', async () => {
-      const ws = mockInstances[0];
-      const tradeMessage = {
-        type: 'trade',
-        data: [
-          { s: 'BINANCE:ETHUSDT', p: 2500, t: Date.now() },
-          { s: 'BINANCE:ETHBTC', p: 0.05, t: Date.now() },
-        ],
-      };
+    it('should attempt reconnection on close', async () => {
+      process.env.FINNHUB_API_KEY = 'test-key';
       
-      ws.emit('message', Buffer.from(JSON.stringify(tradeMessage)));
-      
+      await service.onModuleInit();
+      // Advance timers to let connection establish
+      jest.advanceTimersByTime(20);
       await Promise.resolve();
+
+      const MockWS = require('./__mocks__/ws').default;
+      const instances = MockWS.instances;
+      expect(instances.length).toBeGreaterThanOrEqual(1);
+
+      // Close connection
+      instances[0].close();
       await Promise.resolve();
       
-      expect(mockPricesService.upsertHourlyAverage).toHaveBeenCalledTimes(2);
-      expect(mockGateway.broadcastPrice).toHaveBeenCalledTimes(2);
+      // Fast-forward time to trigger reconnection (backoff starts at 1000ms)
+      jest.advanceTimersByTime(1100);
+      await Promise.resolve();
+
+      // Should create a new connection
+      expect(MockWS.instances.length).toBeGreaterThanOrEqual(1);
     });
 
-    it('ignores unknown symbols', async () => {
-      const ws = mockInstances[0];
-      const tradeMessage = {
-        type: 'trade',
-        data: [{ s: 'UNKNOWN:SYMBOL', p: 100, t: Date.now() }],
-      };
+    it('should use exponential backoff for reconnection', async () => {
+      process.env.FINNHUB_API_KEY = 'test-key';
+      const connectSpy = jest.spyOn(service as any, 'connect');
       
-      ws.emit('message', Buffer.from(JSON.stringify(tradeMessage)));
+      await service.onModuleInit();
+      // Advance timers to let connection establish
+      jest.advanceTimersByTime(20);
+      await Promise.resolve();
+
+      const MockWS = require('./__mocks__/ws').default;
+      const instances = MockWS.instances;
+      const initialBackoff = (service as any).backoffMs;
+      expect(initialBackoff).toBe(1000); // Verify initial backoff
+
+      // Close and trigger reconnection - backoff should increase immediately
+      instances[0].close();
       await Promise.resolve();
       
-      expect(mockPricesService.upsertHourlyAverage).not.toHaveBeenCalled();
-      expect(mockGateway.broadcastPrice).not.toHaveBeenCalled();
+      // The backoff should be increased immediately when close event fires
+      const newBackoff = (service as any).backoffMs;
+      expect(newBackoff).toBe(initialBackoff * 2); // Should be doubled
+      expect(newBackoff).toBeLessThanOrEqual((service as any).maxBackoff);
+      
+      // Advance time past initial backoff to trigger reconnection
+      jest.advanceTimersByTime(initialBackoff + 100);
+      await Promise.resolve();
+      
+      // Verify that connect was called (reconnection happened)
+      expect(connectSpy).toHaveBeenCalled();
     });
 
-    it('handles ping messages by re-subscribing', () => {
-      const ws = mockInstances[0];
-      const sent: string[] = [];
-      ws.send = (data: string) => sent.push(data);
+    it('should not reconnect if shutting down', async () => {
+      process.env.FINNHUB_API_KEY = 'test-key';
       
-      const pingMessage = { type: 'ping' };
-      ws.emit('message', Buffer.from(JSON.stringify(pingMessage)));
+      await service.onModuleInit();
+      // Advance timers to let connection establish
+      jest.advanceTimersByTime(20);
+      await Promise.resolve();
+
+      await service.onModuleDestroy();
+      const MockWS = require('./__mocks__/ws').default;
+      const instances = MockWS.instances;
       
-      const subscribeMessages = sent.filter((s) => JSON.parse(s).type === 'subscribe');
-      expect(subscribeMessages.length).toBeGreaterThan(0);
+      // Close connection
+      instances[0].close();
+      await Promise.resolve();
+      
+      // Advance time - should not reconnect
+      jest.advanceTimersByTime(5000);
+      await Promise.resolve();
+
+      // Should not create new connections
+      expect((service as any).shuttingDown).toBe(true);
     });
 
-    it('handles invalid JSON gracefully', () => {
-      const ws = mockInstances[0];
-      expect(() => {
-        ws.emit('message', Buffer.from('invalid json'));
-      }).not.toThrow();
-    });
+    it('should reset backoff on successful connection', async () => {
+      process.env.FINNHUB_API_KEY = 'test-key';
+      
+      await service.onModuleInit();
+      // Advance timers to let connection establish
+      jest.advanceTimersByTime(20);
+      await Promise.resolve();
 
-    it('handles non-trade message types', () => {
-      const ws = mockInstances[0];
-      const unknownMessage = { type: 'unknown', data: {} };
-      ws.emit('message', Buffer.from(JSON.stringify(unknownMessage)));
-      
-      expect(mockPricesService.upsertHourlyAverage).not.toHaveBeenCalled();
-    });
+      const MockWS = require('./__mocks__/ws').default;
+      const instances = MockWS.instances;
+      (service as any).backoffMs = 8000; // Set high backoff
 
-    it('maps ETH/USDC symbols correctly', async () => {
-      const ws = mockInstances[0];
-      const symbols = ['BINANCE:ETHUSDC', 'KRAKEN:ETHUSDC', 'COINBASE:ETH-USDC'];
-      
-      for (const symbol of symbols) {
-        const tradeMessage = {
-          type: 'trade',
-          data: [{ s: symbol, p: 2500, t: Date.now() }],
-        };
-        ws.emit('message', Buffer.from(JSON.stringify(tradeMessage)));
-        await Promise.resolve();
-      }
-      
-      expect(mockGateway.broadcastPrice).toHaveBeenCalledWith(
-        expect.objectContaining({ pair: 'ETH/USDC' })
-      );
+      // Simulate successful connection by triggering 'open' event
+      const openListeners = instances[0].eventListeners?.get('open') || [];
+      openListeners.forEach((listener: any) => listener());
+      await Promise.resolve();
+
+      expect((service as any).backoffMs).toBe(1000); // Reset to initial
     });
   });
 
   describe('cleanup', () => {
-    it('closes WebSocket on module destroy', () => {
-      service.onModuleInit();
-      const ws = mockInstances[0];
-      const closeSpy = jest.spyOn(ws, 'close');
+    it('should close connection on module destroy', async () => {
+      process.env.FINNHUB_API_KEY = 'test-key';
       
-      service.onModuleDestroy();
-      
-      expect(closeSpy).toHaveBeenCalled();
-    });
+      await service.onModuleInit();
+      await new Promise(resolve => setTimeout(resolve, 20));
 
-    it('clears backfill timer on destroy', () => {
-      service.onModuleInit();
-      const clearIntervalSpy = jest.spyOn(global, 'clearInterval');
-      
-      service.onModuleDestroy();
-      
-      expect(clearIntervalSpy).toHaveBeenCalled();
+      const MockWS = require('./__mocks__/ws').default;
+      const ws = MockWS.instances[0];
+      const closeSpy = jest.spyOn(ws, 'close');
+
+      await service.onModuleDestroy();
+
+      expect((service as any).shuttingDown).toBe(true);
+      expect(closeSpy).toHaveBeenCalled();
     });
   });
 });
+

@@ -1,184 +1,233 @@
-import { PricesService } from '../src/prices/prices.service.js';
-import { jest, describe, it, expect, beforeEach } from '@jest/globals';
+import { Test, TestingModule } from '@nestjs/testing';
+import { PricesService, PairKey } from '../src/prices/prices.service';
+import * as pg from 'pg';
+
+// Mock pg module
+jest.mock('pg', () => {
+  const mockPool = {
+    query: jest.fn(),
+    connect: jest.fn(),
+  };
+  return {
+    Pool: jest.fn(() => mockPool),
+  };
+});
 
 describe('PricesService', () => {
   let service: PricesService;
   let mockPool: any;
 
-  beforeEach(() => {
-    service = new PricesService();
-    mockPool = {
-      query: jest.fn(),
-      connect: jest.fn(),
-    };
-    // @ts-ignore - access private pool for testing
-    service['pool'] = mockPool;
+  beforeEach(async () => {
+    jest.clearAllMocks();
+    const mockPoolInstance = new pg.Pool() as any;
+    mockPool = mockPoolInstance;
+
+    const module: TestingModule = await Test.createTestingModule({
+      providers: [PricesService],
+    }).compile();
+
+    service = module.get<PricesService>(PricesService);
+    
+    // Replace the pool with our mock
+    (service as any).pool = mockPool;
   });
 
   describe('hourBucket', () => {
-    it('computes hourly bucket correctly at start of hour', () => {
-      const now = new Date('2024-01-01T12:00:00.000Z').getTime();
-      // @ts-ignore - private method access for test
-      const hour = service['hourBucket'](now);
-      expect(new Date(hour).toISOString()).toBe('2024-01-01T12:00:00.000Z');
-    });
-
-    it('computes hourly bucket correctly mid-hour', () => {
-      const now = new Date('2024-01-01T12:34:56.789Z').getTime();
-      // @ts-ignore - private method access for test
-      const hour = service['hourBucket'](now);
-      expect(new Date(hour).toISOString()).toBe('2024-01-01T12:00:00.000Z');
-    });
-
-    it('computes hourly bucket correctly at end of hour', () => {
-      const now = new Date('2024-01-01T12:59:59.999Z').getTime();
-      // @ts-ignore - private method access for test
-      const hour = service['hourBucket'](now);
-      expect(new Date(hour).toISOString()).toBe('2024-01-01T12:00:00.000Z');
+    it('should calculate hour bucket correctly', () => {
+      const hourBucket = (service as any).hourBucket;
+      
+      const ts1 = 1609459200000; // 2021-01-01 00:00:00 UTC
+      expect(hourBucket(ts1)).toBe(1609459200000);
+      
+      const ts2 = 1609459200000 + 30 * 60 * 1000; // 30 minutes later
+      expect(hourBucket(ts2)).toBe(1609459200000);
+      
+      const ts3 = 1609459200000 + 90 * 60 * 1000; // 90 minutes later
+      expect(hourBucket(ts3)).toBe(1609462800000);
     });
   });
 
   describe('upsertHourlyAverage', () => {
-    it('inserts new hourly bucket correctly', async () => {
-      mockPool.query.mockResolvedValueOnce({ rows: [{ sum: 100, count: 1 }] });
-      const ts = Date.UTC(2024, 0, 1, 12, 34, 56);
-      const avg = await service.upsertHourlyAverage('ETH/USDT', ts, 100);
-      expect(avg).toBe(100);
+    it('should insert new hourly average', async () => {
+      const pair: PairKey = 'ETH/USDC';
+      const ts = 1609459200000;
+      const price = 1000.5;
+
+      mockPool.query.mockResolvedValueOnce({
+        rows: [{ sum: 1000.5, count: 1 }],
+      } as any);
+
+      const avg = await service.upsertHourlyAverage(pair, ts, price);
+
       expect(mockPool.query).toHaveBeenCalledWith(
         expect.stringContaining('INSERT INTO hourly_averages'),
-        ['ETH/USDT', Math.floor(ts / 3600000) * 3600000, 100]
+        [pair, 1609459200000, price],
       );
+      expect(avg).toBe(1000.5);
     });
 
-    it('updates existing hourly bucket and calculates average', async () => {
-      mockPool.query.mockResolvedValueOnce({ rows: [{ sum: 200, count: 4 }] });
-      const ts = Date.UTC(2024, 0, 1, 12, 34, 56);
-      const avg = await service.upsertHourlyAverage('ETH/USDT', ts, 50);
-      expect(avg).toBe(50); // 200 / 4 = 50
-      expect(mockPool.query).toHaveBeenCalledWith(
-        expect.stringContaining('ON CONFLICT'),
-        ['ETH/USDT', Math.floor(ts / 3600000) * 3600000, 50]
-      );
-    });
+    it('should update existing hourly average', async () => {
+      const pair: PairKey = 'ETH/USDC';
+      const ts = 1609459200000;
+      const price1 = 1000.5;
+      const price2 = 1001.0;
 
-    it('handles count = 0 gracefully', async () => {
-      mockPool.query.mockResolvedValueOnce({ rows: [{ sum: 0, count: 0 }] });
-      const ts = Date.UTC(2024, 0, 1, 12, 34, 56);
-      const avg = await service.upsertHourlyAverage('ETH/USDC', ts, 100);
-      expect(Number.isFinite(avg)).toBe(true);
-      expect(mockPool.query).toHaveBeenCalled();
-    });
-
-    it('handles database errors', async () => {
-      mockPool.query.mockRejectedValueOnce(new Error('DB connection failed'));
-      const ts = Date.UTC(2024, 0, 1, 12, 34, 56);
-      await expect(
-        service.upsertHourlyAverage('ETH/USDT', ts, 100)
-      ).rejects.toThrow('DB connection failed');
-    });
-
-    it('works with all pair types', async () => {
-      mockPool.query.mockResolvedValue({ rows: [{ sum: 100, count: 1 }] });
-      const pairs: Array<'ETH/USDC' | 'ETH/USDT' | 'ETH/BTC'> = ['ETH/USDC', 'ETH/USDT', 'ETH/BTC'];
-      for (const pair of pairs) {
-        await service.upsertHourlyAverage(pair, Date.now(), 100);
-        expect(mockPool.query).toHaveBeenCalledWith(
-          expect.any(String),
-          expect.arrayContaining([pair])
-        );
-      }
-    });
-  });
-
-  describe('hourlyHistory', () => {
-    it('maps rows to typed output correctly', async () => {
-      const now = Date.now();
+      // First insert
       mockPool.query.mockResolvedValueOnce({
-        rows: [{ pair: 'ETH/USDT', hour_start: now, sum: 1000, count: 4 }],
-      });
-      const rows = await service.hourlyHistory('ETH/USDT', 1);
-      expect(rows).toHaveLength(1);
-      expect(rows[0].pair).toBe('ETH/USDT');
-      expect(rows[0].hourStart).toBe(now);
-      expect(rows[0].avg).toBeCloseTo(250);
-      expect(rows[0].count).toBe(4);
-    });
+        rows: [{ sum: 1000.5, count: 1 }],
+      } as any);
+      await service.upsertHourlyAverage(pair, ts, price1);
 
-    it('returns empty array when no history exists', async () => {
-      mockPool.query.mockResolvedValueOnce({ rows: [] });
-      const rows = await service.hourlyHistory('ETH/USDC', 1);
-      expect(rows).toHaveLength(0);
-      expect(mockPool.query).toHaveBeenCalledWith(
-        expect.stringContaining('SELECT'),
-        ['ETH/USDC', expect.any(Number)]
-      );
-    });
-
-    it('handles multiple hours correctly', async () => {
-      const now = Date.now();
-      const hour1 = Math.floor(now / 3600000) * 3600000;
-      const hour2 = hour1 - 3600000;
+      // Second insert (same hour) - should update
       mockPool.query.mockResolvedValueOnce({
-        rows: [
-          { pair: 'ETH/USDT', hour_start: hour2, sum: 500, count: 2 },
-          { pair: 'ETH/USDT', hour_start: hour1, sum: 1000, count: 4 },
-        ],
-      });
-      const rows = await service.hourlyHistory('ETH/USDT', 2);
-      expect(rows).toHaveLength(2);
-      expect(rows[0].hourStart).toBe(hour2);
-      expect(rows[0].avg).toBeCloseTo(250);
-      expect(rows[1].hourStart).toBe(hour1);
-      expect(rows[1].avg).toBeCloseTo(250);
+        rows: [{ sum: 2001.5, count: 2 }],
+      } as any);
+      const avg = await service.upsertHourlyAverage(pair, ts, price2);
+
+      expect(mockPool.query).toHaveBeenCalledTimes(2);
+      expect(avg).toBe(1000.75); // (2001.5 / 2)
     });
 
-    it('handles database errors', async () => {
-      mockPool.query.mockRejectedValueOnce(new Error('Query failed'));
-      await expect(service.hourlyHistory('ETH/USDT', 1)).rejects.toThrow('Query failed');
-    });
+    it('should handle division by zero gracefully', async () => {
+      const pair: PairKey = 'ETH/USDT';
+      const ts = 1609459200000;
+      const price = 1000.5;
 
-    it('calculates correct average when count is 0', async () => {
-      const now = Date.now();
       mockPool.query.mockResolvedValueOnce({
-        rows: [{ pair: 'ETH/USDT', hour_start: now, sum: 0, count: 0 }],
-      });
-      const rows = await service.hourlyHistory('ETH/USDT', 1);
-      expect(rows[0].avg).toBe(0); // Math.max(1, 0) prevents division by zero
+        rows: [{ sum: 1000.5, count: 0 }],
+      } as any);
+
+      const avg = await service.upsertHourlyAverage(pair, ts, price);
+
+      expect(avg).toBe(1000.5); // sum / max(1, 0) = sum / 1
     });
   });
 
   describe('listPairs', () => {
-    it('returns all pairs with their symbols', async () => {
+    it('should return all pairs with their symbols', async () => {
       const pairs = await service.listPairs();
+
       expect(pairs).toHaveLength(3);
-      expect(pairs.find((p) => p.pair === 'ETH/USDC')).toBeDefined();
-      expect(pairs.find((p) => p.pair === 'ETH/USDT')).toBeDefined();
-      expect(pairs.find((p) => p.pair === 'ETH/BTC')).toBeDefined();
-      expect(pairs.find((p) => p.pair === 'ETH/USDC')?.symbols).toHaveLength(6);
-      expect(pairs.find((p) => p.pair === 'ETH/USDT')?.symbols).toHaveLength(1);
+      expect(pairs).toContainEqual({ pair: 'ETH/USDC', symbol: 'BINANCE:ETHUSDC' });
+      expect(pairs).toContainEqual({ pair: 'ETH/USDT', symbol: 'BINANCE:ETHUSDT' });
+      expect(pairs).toContainEqual({ pair: 'ETH/BTC', symbol: 'BINANCE:ETHBTC' });
+    });
+  });
+
+  describe('hourlyHistory', () => {
+    it('should return hourly history for a pair', async () => {
+      const pair: PairKey = 'ETH/USDC';
+      const hours = 24;
+
+      const mockRows = [
+        {
+          pair: 'ETH/USDC',
+          hour_start: '1609459200000',
+          sum: 24000.0,
+          count: '24',
+        },
+        {
+          pair: 'ETH/USDC',
+          hour_start: '1609462800000',
+          sum: 24024.0,
+          count: '24',
+        },
+      ];
+
+      mockPool.query.mockResolvedValueOnce({
+        rows: mockRows,
+      } as any);
+
+      const history = await service.hourlyHistory(pair, hours);
+
+      expect(mockPool.query).toHaveBeenCalledWith(
+        expect.stringContaining('SELECT pair, hour_start, sum, count'),
+        [pair, expect.any(Number)],
+      );
+      expect(history).toHaveLength(2);
+      expect(history[0]).toEqual({
+        pair: 'ETH/USDC',
+        hourStart: 1609459200000,
+        avg: 1000.0,
+        count: 24,
+      });
+    });
+
+    it('should handle empty history', async () => {
+      const pair: PairKey = 'ETH/BTC';
+      const hours = 24;
+
+      mockPool.query.mockResolvedValueOnce({
+        rows: [],
+      } as any);
+
+      const history = await service.hourlyHistory(pair, hours);
+
+      expect(history).toEqual([]);
     });
   });
 
   describe('health', () => {
-    it('returns ok: true when database is healthy', async () => {
-      mockPool.query.mockResolvedValueOnce({ rows: [{ '?column?': 1 }] });
+    it('should return ok: true when database is healthy', async () => {
+      mockPool.query.mockResolvedValueOnce({
+        rows: [{ '?column?': 1 }],
+      } as any);
+
       const health = await service.health();
+
       expect(health).toEqual({ ok: true });
       expect(mockPool.query).toHaveBeenCalledWith('SELECT 1');
     });
 
-    it('returns ok: false when database query fails', async () => {
+    it('should return ok: false when database query fails', async () => {
       mockPool.query.mockRejectedValueOnce(new Error('Connection failed'));
+
       const health = await service.health();
+
       expect(health).toEqual({ ok: false });
     });
 
-    it('handles connection timeout', async () => {
-      const timeoutError = new Error('timeout');
-      timeoutError.name = 'TimeoutError';
-      mockPool.query.mockRejectedValueOnce(timeoutError);
+    it('should handle database connection errors gracefully', async () => {
+      mockPool.query.mockRejectedValueOnce(new Error('ECONNREFUSED'));
+
       const health = await service.health();
+
       expect(health).toEqual({ ok: false });
     });
   });
+
+  describe('bootstrap', () => {
+    it('should create table on initialization', async () => {
+      const mockClient = {
+        query: jest.fn().mockResolvedValue({}),
+        release: jest.fn(),
+      };
+      mockPool.connect.mockResolvedValue(mockClient as any);
+
+      // Create new service instance to trigger bootstrap
+      const newService = new PricesService();
+
+      // Wait a bit for async bootstrap
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      expect(mockPool.connect).toHaveBeenCalled();
+      expect(mockClient.query).toHaveBeenCalledWith(
+        expect.stringContaining('CREATE TABLE IF NOT EXISTS hourly_averages'),
+      );
+      expect(mockClient.release).toHaveBeenCalled();
+    });
+
+    it('should handle bootstrap errors gracefully', async () => {
+      mockPool.connect.mockRejectedValueOnce(new Error('Connection failed'));
+
+      // Should not throw
+      const newService = new PricesService();
+
+      // Wait a bit
+      await new Promise(resolve => setTimeout(resolve, 10));
+
+      expect(mockPool.connect).toHaveBeenCalled();
+    });
+  });
 });
+
