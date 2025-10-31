@@ -6,6 +6,35 @@ This project is productionized with **Docker** and **docker‑compose** for a on
 
 ---
 
+## Quick Start (Docker)
+
+> Prereqs: Docker & Docker Compose
+
+1. **Set up environment variables:**
+   
+   Create a `.env` file in the project root with:
+   ```bash
+   FINNHUB_API_KEY=your_actual_api_key_here
+   DATABASE_URL=postgres://able:able@db:5432/able
+   VITE_WS_URL=ws://localhost:3000
+   VITE_API_ORIGIN=http://localhost:3000
+   ```
+   
+   **Get your Finnhub API key at:** https://finnhub.io (free tier available, up to 60 requests/minute)
+
+2. **Start everything:**
+   ```bash
+   docker compose up --build
+   ```
+
+3. **Open the app:**
+   - Frontend: http://localhost:8080
+   - Backend health: http://localhost:3000/api/health
+
+> The database persists to a local **Docker volume** (`able_db_data`).
+
+---
+
 ## Tech Stack
 
 - **Backend:** NestJS (TypeScript), WebSockets, PostgreSQL (`pg`), pino logging
@@ -16,38 +45,18 @@ This project is productionized with **Docker** and **docker‑compose** for a on
 
 ---
 
-## Quick Start (Docker)
-
-> Prereqs: Docker & Docker Compose
-
-1. Copy `.env.example` to `.env` and set your **Finnhub API key**:
-   ```bash
-   cp .env.example .env
-   # then edit .env and set FINNHUB_API_KEY=your_key_here
-   ```
-
-2. Start everything:
-   ```bash
-   docker compose up --build
-   ```
-
-3. Open the app:
-   - Frontend: http://localhost:8080
-   - Backend health: http://localhost:3000/api/health
-
-> The database persists to a local **Docker volume** (`able_db_data`).
-
----
-
-## What’s Implemented (per spec)
+## What's Implemented (per spec)
 
 - **Backend**
-  - Connects to **Finnhub WebSocket** and subscribes to:  
-    `BINANCE:ETHUSDC`, `BINANCE:ETHUSDT`, `BINANCE:ETHBTC`  
-    (maps to ETH/USDC, ETH/USDT, ETH/BTC respectively)
-  - Handles **reconnect with exponential backoff** and logs connection states
-  - **Streams** normalized tick messages over **WebSocket** to the frontend
-  - **Computes + persists hourly averages** in Postgres (upsert on every tick)
+  - ✅ Connects to **Finnhub WebSocket API** (`wss://ws.finnhub.io`) 
+  - ✅ Subscribes to real-time exchange rates:
+    - **ETH/USDC**: `BINANCE:ETHUSDC`
+    - **ETH/USDT**: `BINANCE:ETHUSDT`
+    - **ETH/BTC**: `BINANCE:ETHBTC`
+  - ✅ **Calculates and persists hourly averages** in PostgreSQL (upsert on every trade)
+  - ✅ **Streams data to frontend via WebSocket** (`/ws` endpoint)
+  - ✅ Handles **connection failures with exponential backoff reconnection**
+  - ✅ Error handling and logging with pino
   - Exposes REST endpoints:
     - `GET /api/health`
     - `GET /api/pairs` – list supported pairs + symbols
@@ -60,21 +69,9 @@ This project is productionized with **Docker** and **docker‑compose** for a on
 - **Code Quality**
   - Clean TypeScript types, separation of concerns
   - Basic logging
-  - A couple of **automated tests** (backend unit test + frontend component test)
+  - Automated tests (backend unit tests + frontend component tests)
 - **Docs**
   - This README covers setup and implementation details
-
----
-
-## Finnhub API Key
-
-Sign up at https://finnhub.io (free tier supports up to 60 req/min).  
-Set the key in `.env` as `FINNHUB_API_KEY`.
-
-> We subscribe to **Binance** symbols which correspond to the requested pairs:
-> - ETH/USDC → `BINANCE:ETHUSDC`
-> - ETH/USDT → `BINANCE:ETHUSDT`
-> - ETH/BTC  → `BINANCE:ETHBTC`
 
 ---
 
@@ -83,19 +80,20 @@ Set the key in `.env` as `FINNHUB_API_KEY`.
 - **Backend**
   ```bash
   cd backend
-  cp .env.example .env   # set FINNHUB_API_KEY and DATABASE_URL
-  npm ci
-  npm run dev
+  # Create .env file with FINNHUB_API_KEY and DATABASE_URL
+  npm install
+  npm run build
+  npm start
   ```
 
 - **Frontend**
   ```bash
   cd frontend
-  npm ci
+  npm install
   npm run dev  # http://localhost:5173
   ```
 
-> Ensure Postgres is running and `DATABASE_URL` is valid (see `.env.example`).
+> Ensure Postgres is running and `DATABASE_URL` is valid.
 
 ---
 
@@ -128,17 +126,53 @@ Set the key in `.env` as `FINNHUB_API_KEY`.
 
 ## Testing
 
-- **Backend**
+Comprehensive automated test suites are included for both backend and frontend:
+
+- **Backend Tests** (Jest + NestJS Testing)
+  - ✅ `PricesService` - Database operations, hourly averages, health checks
+  - ✅ `PricesController` - API endpoints, validation, error handling
+  - ✅ `FinnhubService` - WebSocket connection, reconnection logic, message handling
+  - ✅ `WsGateway` - Broadcasting to clients, connection state management
+  
   ```bash
   cd backend
   npm test
   ```
 
-- **Frontend**
+- **Frontend Tests** (Vitest + React Testing Library)
+  - ✅ `useLivePrices` hook - WebSocket connection, state management, error handling
+  - ✅ `TickerCard` component - Price display, formatting, loading states
+  - ✅ `ConnectionBadge` component - Connection state rendering
+  - ✅ `PairChart` component - Chart rendering with data
+  - ✅ `App` component - Integration tests, loading states
+  - ✅ API configuration tests
+  
   ```bash
   cd frontend
   npm test
   ```
+
+**Test Coverage Includes:**
+- Unit tests for all services and components
+- Integration tests for API endpoints
+- WebSocket connection and reconnection scenarios
+- Error handling and edge cases
+- State management validation
+- UI component rendering tests
+
+---
+
+## Troubleshooting
+
+**401 Authentication Error:**
+- Ensure `FINNHUB_API_KEY` is set in your `.env` file or environment variables
+- Verify your API key is valid at https://finnhub.io
+- The backend will stop retrying on 401 errors to prevent spam
+
+**Dashboard not showing:**
+- Check that the WebSocket connection is established (check browser console)
+- Verify backend is running: `curl http://localhost:3000/api/health`
+- Check backend logs for connection errors
 
 ---
 
@@ -158,5 +192,5 @@ Set the key in `.env` as `FINNHUB_API_KEY`.
 
 - Code runs via `docker compose up --build`
 - Architecture + decisions documented here
-- Includes basic tests and error handling
+- Includes automated tests and error handling
 
