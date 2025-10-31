@@ -1,0 +1,45 @@
+* { box-sizing: border-box; }
+html, body, #root { height: 100%; margin: 0; font-family: Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; -webkit-font-smoothing: antialiased; -moz-osx-font-smoothing: grayscale; }
+.app { padding: 24px; max-width: 1200px; margin: 0 auto; }
+.header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 16px; }
+.card { border: 1px solid #e5e7eb; border-radius: 12px; padding: 16px; box-shadow: 0 1px 3px rgba(0,0,0,0.06); }
+.title { font-size: 28px; font-weight: 600; margin: 0; letter-spacing: .2px; text-align: center; }
+.brand { color: #111827; font-weight: 600; font-size: 42px; line-height: 1.1; display: inline-block; letter-spacing: .4px; }
+/* Active loading circle */
+.ring { width:40px; height:40px; border:3px solid #e5e7eb; border-top-color:#2563eb; border-right-color:#2563eb; border-radius:50%; display:inline-block; animation: spin .8s linear infinite; box-shadow: 0 1px 3px rgba(0,0,0,.06); }
+.subtitle { color: #6b7280; font-size: 12px; }
+.price { font-size: 28px; font-weight: 800; }
+.badge { padding: 4px 8px; border-radius: 999px; font-size: 12px; border: 1px solid #e5e7eb; }
+.badge { display:inline-flex; align-items:center; gap:6px; }
+.badge.conn { background: #f3f4f6; }
+.badge.ok { background: #ecfdf5; border-color: #10b981; color:#065f46; }
+.badge.bad { background: #fef2f2; border-color: #ef4444; color:#991b1b; }
+.dot { width:8px; height:8px; border-radius:999px; display:inline-block; }
+.dot.ok { background:#10b981; }
+.dot.conn { background:#9ca3af; }
+.dot.bad { background:#ef4444; }
+.footer { margin-top: 24px; color: #6b7280; font-size: 12px; }
+.err { color: #b91c1c; font-weight: 600; }
+.btn { background:#111827; color:#fff; border:0; padding:8px 12px; border-radius:8px; cursor:pointer; }
+.btn:hover { background:#1f2937; }
+.loading-hint { color:#6b7280; font-size:12px; }
+
+/* Fade-in animation for smoother first paint */
+.fade-in { animation: fadeIn 280ms ease-in-out both; }
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* Progress bar */
+.progress { width: 320px; height: 6px; background:#f3f4f6; border-radius:999px; overflow:hidden; margin: 10px auto 0; }
+.progress-bar { height:100%; background:#3b82f6; width:0%; transition: width 200ms ease; }
+
+/* Respect reduced motion */
+@media (prefers-reduced-motion: reduce) {
+  .fade-in { animation: none; }
+  .skeleton { animation: none; }
+  .spinner { animation: none; border-top-color:#3b82f6; }
+}

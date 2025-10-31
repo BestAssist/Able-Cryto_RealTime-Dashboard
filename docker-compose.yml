@@ -1,0 +1,46 @@
+services:
+  db:
+    image: postgres:15-alpine
+    environment:
+      POSTGRES_USER: able
+      POSTGRES_PASSWORD: able
+      POSTGRES_DB: able
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U able -d able"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - able_db_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    environment:
+      FINNHUB_API_KEY: ${FINNHUB_API_KEY}
+      DATABASE_URL: ${DATABASE_URL}
+      PORT: 3000
+      CORS_ORIGIN: http://localhost:8080
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_WS_URL: ${VITE_WS_URL}
+        VITE_API_ORIGIN: ${VITE_API_ORIGIN}
+    ports:
+      - "8080:80"
+    depends_on:
+      - backend
+
+volumes:
+  able_db_data:
